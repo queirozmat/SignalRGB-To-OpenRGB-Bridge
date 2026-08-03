@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.0.1"; }
+export function Version() { return "2.0.2"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -97,8 +97,7 @@ const Command = {
 	deviceListUpdated: 100,
 	requestRescanDevices: 140,
 	updateLeds: 1050,
-	setCustomMode: 1100,
-	updateMode: 1101
+	setCustomMode: 1100
 };
 
 let renderClient;
@@ -167,6 +166,10 @@ export function Shutdown() {
 	for (let i = 0; i < devices.length; i++) {
 		renderClient.updateLeds(devices[i].openrgbIndex, fillColors(getControllerLedCount(devices[i]), rgb));
 	}
+	// SignalRGB restarts plugins by calling Shutdown() and immediately loading them
+	// again. Give the SDK socket time to flush the shutdown frame before close(),
+	// otherwise OpenRGB 0.9 can retain a half-read packet and reject reconnects.
+	device.pause(250);
 	closeRenderClientIfIdle();
 }
 
@@ -1141,14 +1144,6 @@ class OpenRGBClient {
 		this.sendPacket(Command.setCustomMode, [], deviceIndex);
 	}
 
-	updateMode(deviceIndex, mode) {
-		if (!this.isReady() || !mode) {
-			return false;
-		}
-
-		return this.sendPacket(Command.updateMode, encodeUpdateModePayload(mode, this.protocolVersion), deviceIndex);
-	}
-
 	updateLeds(deviceIndex, colors) {
 		if (!this.isReady()) {
 			return false;
@@ -1239,11 +1234,7 @@ function setCustomModesForState(client, state) {
 		for (let i = 0; i < state.frames.length; i++) {
 			const frame = state.frames[i];
 			if (!frame.customModeSet && frame.openrgbIndex !== undefined) {
-				if (frame.directMode) {
-					client.updateMode(frame.openrgbIndex, frame.directMode);
-				} else {
-					client.setCustomMode(frame.openrgbIndex);
-				}
+				client.setCustomMode(frame.openrgbIndex);
 				frame.customModeSet = true;
 			}
 		}
@@ -1251,11 +1242,7 @@ function setCustomModesForState(client, state) {
 	}
 
 	if (!state.customModeSet && state.openrgbIndex !== undefined) {
-		if (state.directMode) {
-			client.updateMode(state.openrgbIndex, state.directMode);
-		} else {
-			client.setCustomMode(state.openrgbIndex);
-		}
+		client.setCustomMode(state.openrgbIndex);
 		state.customModeSet = true;
 	}
 }
@@ -1267,9 +1254,6 @@ function buildSignalRgbLayout(controllerData) {
 	}).join(", ") + "]");
 	const state = {
 		openrgbIndex: controllerData.openrgbIndex,
-		directMode: (controllerData.modes || []).find(function (mode) {
-			return String(mode.name || "").toLowerCase() === "direct";
-		}),
 		customModeSet: false,
 		ledPositions: [],
 		subdeviceMaps: [],
@@ -1469,50 +1453,6 @@ function encodeUpdateLedsPayload(colors) {
 	}
 
 	return payload;
-}
-
-function encodeUpdateModePayload(mode, protocolVersion) {
-	const name = stringBytes(mode.name || "Direct");
-	let description = u16(name.length).concat(name);
-
-	if (protocolVersion < 6) {
-		description = description.concat(u32(mode.value || 0));
-	}
-
-	description = description
-		.concat(u32(mode.flags || 0))
-		.concat(u32(mode.speedMin || 0))
-		.concat(u32(mode.speedMax || 0));
-
-	if (protocolVersion >= 3) {
-		description = description
-			.concat(u32(mode.brightnessMin || 0))
-			.concat(u32(mode.brightnessMax || 0));
-	}
-
-	description = description
-		.concat(u32(mode.colorMin || 0))
-		.concat(u32(mode.colorMax || 0))
-		.concat(u32(mode.speed || 0));
-
-	if (protocolVersion >= 3) {
-		description = description.concat(u32(mode.brightness || 0));
-	}
-
-	description = description
-		.concat(u32(mode.direction || 0))
-		.concat(u32(mode.colorMode || 0));
-
-	const colors = mode.colors || [];
-	description = description.concat(u16(colors.length));
-	for (let i = 0; i < colors.length; i++) {
-		const color = normalizeColor(colors[i]);
-		const value = clampByte(color[0]) | (clampByte(color[1]) << 8) | (clampByte(color[2]) << 16);
-		description = description.concat(u32(value));
-	}
-
-	const body = u32(mode.id || 0).concat(description);
-	return u32(4 + body.length).concat(body);
 }
 
 function parseControllerData(payload, deviceIndex, protocolVersion) {
