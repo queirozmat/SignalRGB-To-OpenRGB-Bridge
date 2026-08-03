@@ -28,6 +28,9 @@ let pendingPackets = [];
 let pendingSize = 0;
 let reconnectDelay = RECONNECT_MIN_MS;
 let reconnectTimer;
+let protocolResponse;
+let clientNameSent = false;
+const customModeDevices = new Set();
 
 function timestamp() {
   return new Date().toISOString();
@@ -89,6 +92,53 @@ function consumePackets(buffer, onPacket) {
   return Buffer.from(remaining);
 }
 
+function packetCommand(packet) {
+  return packet.length >= 12 ? packet.readUInt32LE(8) : -1;
+}
+
+function packetDevice(packet) {
+  return packet.length >= 8 ? packet.readUInt32LE(4) : 0;
+}
+
+function routeDownstreamPacket(packet) {
+  const command = packetCommand(packet);
+  const deviceId = packetDevice(packet);
+
+  // OpenRGB associates protocol negotiation with the lifetime of its TCP
+  // session. SignalRGB restarts create a new downstream session while this
+  // daemon deliberately keeps the upstream session alive. Replay the original
+  // negotiation response locally instead of renegotiating the same connection.
+  if (command === 40 && protocolResponse) {
+    if (downstream && !downstream.destroyed) {
+      downstream.write(protocolResponse);
+    }
+    log('Replayed cached OpenRGB protocol response for a restarted SignalRGB client.');
+    return;
+  }
+
+  // The client name is a connection-scoped property and only needs to be sent
+  // once for the persistent upstream connection.
+  if (command === 50 && clientNameSent) {
+    return;
+  }
+
+  // Direct/custom mode is also sticky for the MSI controller. Reapplying it on
+  // every SignalRGB plugin reload can leave older OpenRGB servers accepting
+  // packets without updating the hardware.
+  if (command === 1100 && customModeDevices.has(deviceId)) {
+    log(`Ignored duplicate SetCustomMode for OpenRGB device ${deviceId}.`);
+    return;
+  }
+
+  if (command === 50) {
+    clientNameSent = true;
+  } else if (command === 1100) {
+    customModeDevices.add(deviceId);
+  }
+
+  queueForUpstream(packet);
+}
+
 function queueForUpstream(packet) {
   if (upstreamConnected && upstream && !upstream.destroyed) {
     upstream.write(packet);
@@ -139,6 +189,9 @@ function connectUpstream() {
   upstream.on('connect', () => {
     upstreamConnected = true;
     reconnectDelay = RECONNECT_MIN_MS;
+    protocolResponse = undefined;
+    clientNameSent = false;
+    customModeDevices.clear();
     log(`Persistent OpenRGB connection established at ${OPENRGB_HOST}:${OPENRGB_PORT}.`);
     flushPending();
   });
@@ -146,6 +199,9 @@ function connectUpstream() {
   upstream.on('data', (chunk) => {
     upstreamBuffer = Buffer.concat([upstreamBuffer, chunk]);
     upstreamBuffer = consumePackets(upstreamBuffer, (packet) => {
+      if (packetCommand(packet) === 40) {
+        protocolResponse = Buffer.from(packet);
+      }
       if (downstream && !downstream.destroyed) {
         downstream.write(packet);
       }
@@ -180,7 +236,7 @@ const server = net.createServer((socket) => {
 
   socket.on('data', (chunk) => {
     downstreamBuffer = Buffer.concat([downstreamBuffer, chunk]);
-    downstreamBuffer = consumePackets(downstreamBuffer, queueForUpstream);
+    downstreamBuffer = consumePackets(downstreamBuffer, routeDownstreamPacket);
   });
 
   socket.on('error', (error) => {

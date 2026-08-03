@@ -1,6 +1,6 @@
 {
   "name": "signalrgb-to-openrgb-bridge",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "private": true,
   "description": "SignalRGB addon that controls OpenRGB SDK devices directly over TCP.",
   "scripts": {
