@@ -1,0 +1,10 @@
+{
+  "name": "openrgb-bridge-daemon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persistent packet proxy between SignalRGB and the OpenRGB SDK server.",
+  "scripts": {
+    "start": "node server.js",
+    "install-service": "powershell -ExecutionPolicy Bypass -File install.ps1"
+  }
+}

@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.0.2"; }
+export function Version() { return "2.1.0"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -40,7 +40,7 @@ const PORT_SETTING = "SDKServerPort";
 const SELECTED_DEVICES_SETTING = "SelectedDevices";
 const LAST_DEVICES_SETTING = "LastDevices";
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 6742;
+const DEFAULT_PORT = 9730;
 const CLIENT_PROTOCOL_VERSION = 5;
 const CLIENT_NAME = "SignalRGB OpenRGB Bridge";
 const BRIDGE_CONTROLLER_ID = "openrgb-bridge";
@@ -174,6 +174,12 @@ export function Shutdown() {
 }
 
 export function DiscoveryService() {
+	// Version 2.1 routes SDK traffic through the persistent local service. Migrate
+	// the former direct-SDK default automatically while preserving custom ports.
+	const configuredPort = readSetting(PORT_SETTING, undefined);
+	if (configuredPort === undefined || Number(configuredPort) === 6742) {
+		saveSetting(PORT_SETTING, String(DEFAULT_PORT));
+	}
 	this.IconUrl = ICON_URL;
 	this.availableDevices = [];
 	this.availableDeviceSummaries = readLastDeviceSummaries();
@@ -1169,8 +1175,8 @@ function getRenderStateKey(controllerData) {
 }
 
 function ensureRenderClient(controllerData, logger) {
-	const host = normalizeHost(controllerData.openrgbHost || readSetting(HOST_SETTING, DEFAULT_HOST));
-	const port = normalizePort(controllerData.openrgbPort || readNumberSetting(PORT_SETTING, DEFAULT_PORT));
+	const host = normalizeHost(readSetting(HOST_SETTING, controllerData.openrgbHost || DEFAULT_HOST));
+	const port = readNumberSetting(PORT_SETTING, DEFAULT_PORT);
 	const key = host + ":" + port;
 
 	if (renderClient && renderClientKey === key) {

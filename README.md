@@ -7,6 +7,22 @@ The MSI B450 Tomahawk (MS-7C02) has been hardware-tested with OpenRGB 0.9
 but fail to apply SDK color updates. For this board, use OpenRGB 0.9, start its
 SDK server on port 6742, and then start SignalRGB.
 
+## Persistent bridge service
+
+For OpenRGB versions whose SDK server becomes unresponsive after SignalRGB
+restarts, run `OpenRGBBridgeService.exe`. It listens locally on port 9730 and
+maintains one persistent connection to OpenRGB on port 6742. Configure this
+add-on to connect to `127.0.0.1:9730`.
+
+Startup order:
+
+1. Start OpenRGB and its SDK server on port 6742.
+2. Start `OpenRGBBridgeService.exe`.
+3. Start SignalRGB with the bridge port set to 9730.
+
+The service negotiates the SDK protocol transparently and works with both
+OpenRGB SDK v4 and v5.
+
 SignalRGB To OpenRGB Bridge is a SignalRGB addon that exposes devices supported by [OpenRGB](https://openrgb.org/) as controllable SignalRGB devices.
 
 Use it to fill support gaps in your setup: GPUs, keyboards, LED controllers, motherboard headers, custom Visual Map layouts, or any other device that works in OpenRGB but is not currently supported directly by SignalRGB.
