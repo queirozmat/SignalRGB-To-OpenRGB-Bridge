@@ -22,8 +22,7 @@ rotateLog();
 let upstream;
 let upstreamConnected = false;
 let upstreamBuffer = Buffer.alloc(0);
-let downstream;
-let downstreamBuffer = Buffer.alloc(0);
+const downstreams = new Set();
 let pendingPackets = [];
 let pendingSize = 0;
 let reconnectDelay = RECONNECT_MIN_MS;
@@ -100,7 +99,7 @@ function packetDevice(packet) {
   return packet.length >= 8 ? packet.readUInt32LE(4) : 0;
 }
 
-function routeDownstreamPacket(packet) {
+function routeDownstreamPacket(packet, socket) {
   const command = packetCommand(packet);
   const deviceId = packetDevice(packet);
 
@@ -109,8 +108,8 @@ function routeDownstreamPacket(packet) {
   // daemon deliberately keeps the upstream session alive. Replay the original
   // negotiation response locally instead of renegotiating the same connection.
   if (command === 40 && protocolResponse) {
-    if (downstream && !downstream.destroyed) {
-      downstream.write(protocolResponse);
+    if (socket && !socket.destroyed) {
+      socket.write(protocolResponse);
     }
     log('Replayed cached OpenRGB protocol response for a restarted SignalRGB client.');
     return;
@@ -202,8 +201,10 @@ function connectUpstream() {
       if (packetCommand(packet) === 40) {
         protocolResponse = Buffer.from(packet);
       }
-      if (downstream && !downstream.destroyed) {
-        downstream.write(packet);
+      for (const socket of downstreams) {
+        if (!socket.destroyed) {
+          socket.write(packet);
+        }
       }
     });
   });
@@ -222,21 +223,14 @@ function connectUpstream() {
 }
 
 const server = net.createServer((socket) => {
-  if (downstream && !downstream.destroyed) {
-    log('Replacing the previous SignalRGB client connection.');
-    downstream.destroy();
-  }
-
-  downstream = socket;
-  downstreamBuffer = Buffer.alloc(0);
-  pendingPackets = [];
-  pendingSize = 0;
+  downstreams.add(socket);
+  let socketBuffer = Buffer.alloc(0);
   socket.setNoDelay(true);
-  log(`SignalRGB connected from ${socket.remoteAddress}:${socket.remotePort}.`);
+  log(`SignalRGB connected from ${socket.remoteAddress}:${socket.remotePort} (${downstreams.size} active client(s)).`);
 
   socket.on('data', (chunk) => {
-    downstreamBuffer = Buffer.concat([downstreamBuffer, chunk]);
-    downstreamBuffer = consumePackets(downstreamBuffer, routeDownstreamPacket);
+    socketBuffer = Buffer.concat([socketBuffer, chunk]);
+    socketBuffer = consumePackets(socketBuffer, (packet) => routeDownstreamPacket(packet, socket));
   });
 
   socket.on('error', (error) => {
@@ -244,13 +238,13 @@ const server = net.createServer((socket) => {
   });
 
   socket.on('close', () => {
-    if (downstream === socket) {
-      downstream = undefined;
-      downstreamBuffer = Buffer.alloc(0);
+    downstreams.delete(socket);
+    socketBuffer = Buffer.alloc(0);
+    if (downstreams.size === 0) {
       pendingPackets = [];
       pendingSize = 0;
     }
-    log('SignalRGB disconnected; persistent OpenRGB connection kept alive.');
+    log(`SignalRGB disconnected; ${downstreams.size} active client(s), persistent OpenRGB connection kept alive.`);
   });
 });
 
@@ -268,7 +262,8 @@ server.listen(LISTEN_PORT, LISTEN_HOST, () => {
 function shutdown(signal) {
   log(`Received ${signal}; shutting down.`);
   server.close();
-  if (downstream) downstream.destroy();
+  for (const socket of downstreams) socket.destroy();
+  downstreams.clear();
   if (upstream) upstream.destroy();
   setTimeout(() => process.exit(0), 100).unref();
 }
