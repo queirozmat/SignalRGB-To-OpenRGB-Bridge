@@ -1,5 +1,12 @@
 # SignalRGB To OpenRGB Bridge
 
+## MSI B450 Tomahawk compatibility
+
+The MSI B450 Tomahawk (MS-7C02) has been hardware-tested with OpenRGB 0.9
+(SDK protocol v4). Newer OpenRGB 1.0 release candidates may detect the board
+but fail to apply SDK color updates. For this board, use OpenRGB 0.9, start its
+SDK server on port 6742, and then start SignalRGB.
+
 SignalRGB To OpenRGB Bridge is a SignalRGB addon that exposes devices supported by [OpenRGB](https://openrgb.org/) as controllable SignalRGB devices.
 
 Use it to fill support gaps in your setup: GPUs, keyboards, LED controllers, motherboard headers, custom Visual Map layouts, or any other device that works in OpenRGB but is not currently supported directly by SignalRGB.

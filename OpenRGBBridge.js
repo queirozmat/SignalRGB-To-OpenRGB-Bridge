@@ -1,8 +1,26 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.0.0"; }
+export function Version() { return "2.0.1"; }
 export function Type() { return "network"; }
+export function DeviceType() {
+	if (typeof controller === "undefined") {
+		return "other";
+	}
+
+	switch (Number(controller.type)) {
+		case 0: return "motherboard";
+		case 1: return "ram";
+		case 2: return "gpu";
+		case 3: return "aio";
+		case 4: return "ledstrip";
+		case 5: return "keyboard";
+		case 6: return "mouse";
+		case 7: return "mousepad";
+		case 8: return "headset";
+		default: return "other";
+	}
+}
 export function Publisher() { return "Fefe_du_973"; }
 export function Size() { return [1, 1]; }
 export function DefaultPosition() { return [0, 70]; }
@@ -79,7 +97,8 @@ const Command = {
 	deviceListUpdated: 100,
 	requestRescanDevices: 140,
 	updateLeds: 1050,
-	setCustomMode: 1100
+	setCustomMode: 1100,
+	updateMode: 1101
 };
 
 let renderClient;
@@ -89,6 +108,10 @@ let renderStates = {};
 export function Initialize() {
 	device.setName(controller.name || "OpenRGB Device");
 	device.setImageFromUrl(controller.image || ICON_URL);
+	const availableModes = (controller.modes || []).map(function (mode) {
+		return mode.id + ":" + mode.name + "(value=" + mode.value + ",flags=" + mode.flags + ",colorMode=" + mode.colorMode + ")";
+	}).join(", ");
+	logFromDevice("OpenRGB modes for " + (controller.name || controller.id) + ": " + (availableModes || "none"));
 
 	const stateKey = getRenderStateKey(controller);
 	renderStates[stateKey] = buildSignalRgbLayout(controller);
@@ -118,8 +141,13 @@ export function Render() {
 		const signatureKey = String(frame.openrgbIndex);
 
 		if (signature !== state.lastFrameSignatures[signatureKey]) {
-			client.updateLeds(frame.openrgbIndex, frame.colors);
-			state.lastFrameSignatures[signatureKey] = signature;
+			// Only remember a frame after it was actually written. Render() also runs
+			// while the SDK connection is being negotiated; updateLeds() returns false
+			// during that window. Remembering that unsent frame prevents the identical
+			// first real frame from ever being transmitted once the client is ready.
+			if (client.updateLeds(frame.openrgbIndex, frame.colors)) {
+				state.lastFrameSignatures[signatureKey] = signature;
+			}
 		}
 	}
 
@@ -1113,6 +1141,14 @@ class OpenRGBClient {
 		this.sendPacket(Command.setCustomMode, [], deviceIndex);
 	}
 
+	updateMode(deviceIndex, mode) {
+		if (!this.isReady() || !mode) {
+			return false;
+		}
+
+		return this.sendPacket(Command.updateMode, encodeUpdateModePayload(mode, this.protocolVersion), deviceIndex);
+	}
+
 	updateLeds(deviceIndex, colors) {
 		if (!this.isReady()) {
 			return false;
@@ -1203,7 +1239,11 @@ function setCustomModesForState(client, state) {
 		for (let i = 0; i < state.frames.length; i++) {
 			const frame = state.frames[i];
 			if (!frame.customModeSet && frame.openrgbIndex !== undefined) {
-				client.setCustomMode(frame.openrgbIndex);
+				if (frame.directMode) {
+					client.updateMode(frame.openrgbIndex, frame.directMode);
+				} else {
+					client.setCustomMode(frame.openrgbIndex);
+				}
 				frame.customModeSet = true;
 			}
 		}
@@ -1211,7 +1251,11 @@ function setCustomModesForState(client, state) {
 	}
 
 	if (!state.customModeSet && state.openrgbIndex !== undefined) {
-		client.setCustomMode(state.openrgbIndex);
+		if (state.directMode) {
+			client.updateMode(state.openrgbIndex, state.directMode);
+		} else {
+			client.setCustomMode(state.openrgbIndex);
+		}
 		state.customModeSet = true;
 	}
 }
@@ -1223,6 +1267,9 @@ function buildSignalRgbLayout(controllerData) {
 	}).join(", ") + "]");
 	const state = {
 		openrgbIndex: controllerData.openrgbIndex,
+		directMode: (controllerData.modes || []).find(function (mode) {
+			return String(mode.name || "").toLowerCase() === "direct";
+		}),
 		customModeSet: false,
 		ledPositions: [],
 		subdeviceMaps: [],
@@ -1422,6 +1469,50 @@ function encodeUpdateLedsPayload(colors) {
 	}
 
 	return payload;
+}
+
+function encodeUpdateModePayload(mode, protocolVersion) {
+	const name = stringBytes(mode.name || "Direct");
+	let description = u16(name.length).concat(name);
+
+	if (protocolVersion < 6) {
+		description = description.concat(u32(mode.value || 0));
+	}
+
+	description = description
+		.concat(u32(mode.flags || 0))
+		.concat(u32(mode.speedMin || 0))
+		.concat(u32(mode.speedMax || 0));
+
+	if (protocolVersion >= 3) {
+		description = description
+			.concat(u32(mode.brightnessMin || 0))
+			.concat(u32(mode.brightnessMax || 0));
+	}
+
+	description = description
+		.concat(u32(mode.colorMin || 0))
+		.concat(u32(mode.colorMax || 0))
+		.concat(u32(mode.speed || 0));
+
+	if (protocolVersion >= 3) {
+		description = description.concat(u32(mode.brightness || 0));
+	}
+
+	description = description
+		.concat(u32(mode.direction || 0))
+		.concat(u32(mode.colorMode || 0));
+
+	const colors = mode.colors || [];
+	description = description.concat(u16(colors.length));
+	for (let i = 0; i < colors.length; i++) {
+		const color = normalizeColor(colors[i]);
+		const value = clampByte(color[0]) | (clampByte(color[1]) << 8) | (clampByte(color[2]) << 16);
+		description = description.concat(u32(value));
+	}
+
+	const body = u32(mode.id || 0).concat(description);
+	return u32(4 + body.length).concat(body);
 }
 
 function parseControllerData(payload, deviceIndex, protocolVersion) {
@@ -1884,7 +1975,21 @@ function fillColors(count, rgb) {
 
 function hexToRgb(hex) {
 	if (typeof hex === "object" && hex !== null) {
-		return normalizeColor(hex);
+		const channels = [
+			Number(hex.red !== undefined ? hex.red : hex.r),
+			Number(hex.green !== undefined ? hex.green : hex.g),
+			Number(hex.blue !== undefined ? hex.blue : hex.b)
+		];
+
+		// SignalRGB exposes color parameters as normalized floating-point channels
+		// (0.0-1.0), whereas the OpenRGB SDK expects byte channels (0-255).
+		// Canvas samples are already byte-valued, so keep this conversion scoped to
+		// color parameters handled by hexToRgb().
+		if (channels.every(function (channel) { return !isNaN(channel) && channel >= 0 && channel <= 1; })) {
+			return channels.map(function (channel) { return Math.round(channel * 255); });
+		}
+
+		return channels.map(clampByte);
 	}
 
 	const value = String(hex || "#000000");
