@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.1.0"; }
+export function Version() { return "2.1.1"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -2085,7 +2085,15 @@ function readSetting(key, fallback) {
 }
 
 function readNumberSetting(key, fallback) {
-	return normalizePort(readSetting(key, fallback));
+	const port = normalizePort(readSetting(key, fallback));
+	// SignalRGB runs discovery and device plugins in separate contexts. Existing
+	// device instances can therefore retain the old direct-SDK default even after
+	// DiscoveryService migrated it. Route that legacy default through the local
+	// persistent service in every context.
+	if (key === PORT_SETTING && port === 6742 && DEFAULT_PORT === 9730) {
+		return DEFAULT_PORT;
+	}
+	return port;
 }
 
 function saveSetting(key, value) {
