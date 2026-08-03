@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.1.1"; }
+export function Version() { return "2.1.2"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -1175,8 +1175,11 @@ function getRenderStateKey(controllerData) {
 }
 
 function ensureRenderClient(controllerData, logger) {
-	const host = normalizeHost(readSetting(HOST_SETTING, controllerData.openrgbHost || DEFAULT_HOST));
-	const port = readNumberSetting(PORT_SETTING, DEFAULT_PORT);
+	// Device plugins do not expose SignalRGB's discovery `service` object. The
+	// persistent bridge endpoint is intentionally fixed and local, while the
+	// daemon owns the configurable upstream OpenRGB connection.
+	const host = normalizeHost(controllerData.openrgbHost || DEFAULT_HOST);
+	const port = DEFAULT_PORT;
 	const key = host + ":" + port;
 
 	if (renderClient && renderClientKey === key) {
