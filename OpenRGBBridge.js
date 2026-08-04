@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.2.0"; }
+export function Version() { return "2.2.1"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -63,7 +63,8 @@ const REQUEST_TIMEOUT_MS = 10000;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 5000;
 const AUTO_CONNECT_INTERVAL_MS = 4000;
-const STARTUP_RESCAN_SETTLE_MS = 6000;
+const MSI_RECOVERY_DELAY_MS = 30000;
+const MSI_RECOVERY_SETTLE_MS = 8000;
 
 const DeviceTypeIcon = {
 	0: "mainboard",
@@ -104,6 +105,9 @@ const Command = {
 let renderClient;
 let renderClientKey = "";
 let renderStates = {};
+let renderRecoveryTimeoutId;
+let renderRecoverySettleTimeoutId;
+let renderRecoveryScheduled = false;
 
 export function Initialize() {
 	device.setName(controller.name || "OpenRGB Device");
@@ -227,12 +231,6 @@ export function DiscoveryService() {
 	// change), cleared on success so we do not hammer OpenRGB once everything is in sync.
 	this.needsScan = true;
 	this.lastAutoAttemptAt = 0;
-	// SignalRGB can leave MSI Super I/O controllers in a state where OpenRGB still
-	// accepts SDK color packets but the hardware ignores them. OpenRGB SDK v5's
-	// official rescan command recreates and reinitializes those controllers. Request
-	// it exactly once per addon load, before accepting the fresh controller indices.
-	this.startupRecoveryPending = true;
-	this.startupRescanInProgress = false;
 
 	this.Initialize = function () {
 		this.connectSelectedDevices();
@@ -314,7 +312,6 @@ export function DiscoveryService() {
 					if (self.refreshId !== refreshId || self.client !== client) {
 						return;
 					}
-					self.startupRescanInProgress = false;
 					self.setStatus("Connected to OpenRGB at " + host + ":" + port + ". Reading controllers...");
 					client.getAllControllers(function (devices, error) {
 						if (self.refreshId !== refreshId || self.client !== client) {
@@ -347,19 +344,6 @@ export function DiscoveryService() {
 					});
 				};
 
-				if (self.startupRecoveryPending && client.protocolVersion >= 5) {
-					self.startupRecoveryPending = false;
-					self.startupRescanInProgress = true;
-					self.setStatus("Connected to OpenRGB SDK v" + client.protocolVersion + ". Reinitializing hardware controllers...");
-					if (!client.requestRescanDevices()) {
-						self.startupRescanInProgress = false;
-						readControllers();
-						return;
-					}
-					setTimeout(readControllers, STARTUP_RESCAN_SETTLE_MS);
-					return;
-				}
-
 				readControllers();
 			},
 			onError: function (message) {
@@ -383,10 +367,6 @@ export function DiscoveryService() {
 					return;
 				}
 
-				if (self.startupRescanInProgress) {
-					self.setStatus("OpenRGB hardware rescan in progress. Waiting for controllers to settle...");
-					return;
-				}
 				self.needsScan = true;
 				self.setStatus("OpenRGB device list changed. Reloading...");
 			}
@@ -1221,6 +1201,7 @@ function ensureRenderClient(controllerData, logger) {
 	}
 
 	if (renderClient) {
+		clearRenderRecoveryTimers(true);
 		renderClient.close();
 	}
 
@@ -1240,6 +1221,8 @@ function ensureRenderClient(controllerData, logger) {
 
 				setCustomModesForState(client, renderStates[stateKey]);
 			}
+
+			scheduleMsiStartupRecovery(client, controllerData, logger || logFromDevice);
 		},
 		onDeviceListUpdated: function () {
 			(logger || logFromDevice)("OpenRGB device list changed; refresh the addon device list if colors stop matching.");
@@ -1247,6 +1230,74 @@ function ensureRenderClient(controllerData, logger) {
 	});
 	renderClient.connect();
 	return renderClient;
+}
+
+function needsMsiStartupRecovery(controllerData) {
+	const name = String((controllerData && controllerData.name) || "");
+	return Number(controllerData && controllerData.type) === 0 &&
+		(/MSI B450 TOMAHAWK/i.test(name) || /MS-7C02/i.test(name));
+}
+
+function scheduleMsiStartupRecovery(client, controllerData, logger) {
+	if (renderRecoveryScheduled || !needsMsiStartupRecovery(controllerData)) {
+		return;
+	}
+
+	renderRecoveryScheduled = true;
+	logger("MSI B450 startup recovery scheduled in 30 seconds.");
+	renderRecoveryTimeoutId = setTimeout(function () {
+		renderRecoveryTimeoutId = undefined;
+		if (renderClient !== client || !client.isReady()) {
+			logger("MSI B450 startup recovery skipped because the OpenRGB connection is not ready.");
+			return;
+		}
+
+		if (!client.requestRescanDevices()) {
+			logger("MSI B450 startup recovery could not request an OpenRGB hardware rescan.");
+			return;
+		}
+
+		logger("MSI B450 startup recovery requested an OpenRGB hardware rescan; waiting 8 seconds.");
+		renderRecoverySettleTimeoutId = setTimeout(function () {
+			renderRecoverySettleTimeoutId = undefined;
+			if (renderClient !== client || !client.isReady()) {
+				return;
+			}
+
+			for (const stateKey in renderStates) {
+				if (!Object.prototype.hasOwnProperty.call(renderStates, stateKey)) {
+					continue;
+				}
+
+				const state = renderStates[stateKey];
+				state.customModeSet = false;
+				state.lastFrameSignatures = {};
+				state.lastFrameSignature = "";
+				if (state.frames) {
+					for (let i = 0; i < state.frames.length; i++) {
+						state.frames[i].customModeSet = false;
+					}
+				}
+				setCustomModesForState(client, state);
+			}
+
+			logger("MSI B450 startup recovery complete; re-sending the current SignalRGB frame.");
+		}, MSI_RECOVERY_SETTLE_MS);
+	}, MSI_RECOVERY_DELAY_MS);
+}
+
+function clearRenderRecoveryTimers(resetScheduled) {
+	if (renderRecoveryTimeoutId !== undefined) {
+		clearTimeout(renderRecoveryTimeoutId);
+		renderRecoveryTimeoutId = undefined;
+	}
+	if (renderRecoverySettleTimeoutId !== undefined) {
+		clearTimeout(renderRecoverySettleTimeoutId);
+		renderRecoverySettleTimeoutId = undefined;
+	}
+	if (resetScheduled) {
+		renderRecoveryScheduled = false;
+	}
 }
 
 function closeRenderState(deviceId) {
@@ -1262,6 +1313,7 @@ function closeRenderClientIfIdle() {
 	}
 
 	if (renderClient) {
+		clearRenderRecoveryTimers(true);
 		renderClient.close();
 		renderClient = undefined;
 		renderClientKey = "";
