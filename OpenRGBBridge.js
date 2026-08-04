@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.1.4"; }
+export function Version() { return "2.2.0"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -40,7 +40,7 @@ const PORT_SETTING = "SDKServerPort";
 const SELECTED_DEVICES_SETTING = "SelectedDevices";
 const LAST_DEVICES_SETTING = "LastDevices";
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 9730;
+const DEFAULT_PORT = 6742;
 const CLIENT_PROTOCOL_VERSION = 5;
 const CLIENT_NAME = "SignalRGB OpenRGB Bridge";
 const BRIDGE_CONTROLLER_ID = "openrgb-bridge";
@@ -63,6 +63,7 @@ const REQUEST_TIMEOUT_MS = 10000;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 5000;
 const AUTO_CONNECT_INTERVAL_MS = 4000;
+const STARTUP_RESCAN_SETTLE_MS = 6000;
 
 const DeviceTypeIcon = {
 	0: "mainboard",
@@ -174,10 +175,10 @@ export function Shutdown() {
 }
 
 export function DiscoveryService() {
-	// Version 2.1 routes SDK traffic through the persistent local service. Migrate
-	// the former direct-SDK default automatically while preserving custom ports.
+	// Version 2.2 connects directly to OpenRGB again. Migrate installations that
+	// used the retired local proxy on port 9730 while preserving custom endpoints.
 	const configuredPort = readSetting(PORT_SETTING, undefined);
-	if (configuredPort === undefined || Number(configuredPort) === 6742) {
+	if (configuredPort === undefined || Number(configuredPort) === 9730) {
 		saveSetting(PORT_SETTING, String(DEFAULT_PORT));
 	}
 	this.IconUrl = ICON_URL;
@@ -226,6 +227,12 @@ export function DiscoveryService() {
 	// change), cleared on success so we do not hammer OpenRGB once everything is in sync.
 	this.needsScan = true;
 	this.lastAutoAttemptAt = 0;
+	// SignalRGB can leave MSI Super I/O controllers in a state where OpenRGB still
+	// accepts SDK color packets but the hardware ignores them. OpenRGB SDK v5's
+	// official rescan command recreates and reinitializes those controllers. Request
+	// it exactly once per addon load, before accepting the fresh controller indices.
+	this.startupRecoveryPending = true;
+	this.startupRescanInProgress = false;
 
 	this.Initialize = function () {
 		this.connectSelectedDevices();
@@ -303,36 +310,57 @@ export function DiscoveryService() {
 					return;
 				}
 
-				self.setStatus("Connected to OpenRGB at " + host + ":" + port + ". Reading controllers...");
-				client.getAllControllers(function (devices, error) {
+				const readControllers = function () {
 					if (self.refreshId !== refreshId || self.client !== client) {
 						return;
 					}
+					self.startupRescanInProgress = false;
+					self.setStatus("Connected to OpenRGB at " + host + ":" + port + ". Reading controllers...");
+					client.getAllControllers(function (devices, error) {
+						if (self.refreshId !== refreshId || self.client !== client) {
+							return;
+						}
 
-					if (error) {
-						self.setStatus(error + " Will retry shortly.");
-						self.needsScan = true;
+						if (error) {
+							self.setStatus(error + " Will retry shortly.");
+							self.needsScan = true;
+							self.finishRefresh(client);
+							return;
+						}
+
+						const knownBeforeRefresh = self.getAllKnownDevices();
+						self.availableDevices = assignStableDeviceIds(devices, host, port);
+						self.availableDeviceSummaries = buildDeviceSummaries(self.availableDevices);
+						self.queueStaleControllers(knownBeforeRefresh, self.availableDevices);
+						saveSetting(LAST_DEVICES_SETTING, JSON.stringify(self.availableDeviceSummaries));
+						const selectedBeforeRefresh = self.selectedDevices.length > 0 ? self.selectedDevices : readSelectedDevices();
+						self.hasStoredSelectedDevices = self.hasStoredSelectedDevices || hasStoredSelectedDevices();
+						self.selectedDevices = self.hasStoredSelectedDevices
+							? getSelectedDevicesById(self.availableDevices, selectedBeforeRefresh)
+							: self.availableDeviceSummaries.slice(0);
+						saveSetting(SELECTED_DEVICES_SETTING, JSON.stringify(self.selectedDevices));
+						self.hasStoredSelectedDevices = true;
+						self.requestControllerSync();
+						self.needsScan = false;
 						self.finishRefresh(client);
+						self.setStatus("Connected to OpenRGB at " + host + ":" + port + ". Found " + self.availableDevices.length + " device(s).");
+					});
+				};
+
+				if (self.startupRecoveryPending && client.protocolVersion >= 5) {
+					self.startupRecoveryPending = false;
+					self.startupRescanInProgress = true;
+					self.setStatus("Connected to OpenRGB SDK v" + client.protocolVersion + ". Reinitializing hardware controllers...");
+					if (!client.requestRescanDevices()) {
+						self.startupRescanInProgress = false;
+						readControllers();
 						return;
 					}
+					setTimeout(readControllers, STARTUP_RESCAN_SETTLE_MS);
+					return;
+				}
 
-					const knownBeforeRefresh = self.getAllKnownDevices();
-					self.availableDevices = assignStableDeviceIds(devices, host, port);
-					self.availableDeviceSummaries = buildDeviceSummaries(self.availableDevices);
-					self.queueStaleControllers(knownBeforeRefresh, self.availableDevices);
-					saveSetting(LAST_DEVICES_SETTING, JSON.stringify(self.availableDeviceSummaries));
-					const selectedBeforeRefresh = self.selectedDevices.length > 0 ? self.selectedDevices : readSelectedDevices();
-					self.hasStoredSelectedDevices = self.hasStoredSelectedDevices || hasStoredSelectedDevices();
-					self.selectedDevices = self.hasStoredSelectedDevices
-						? getSelectedDevicesById(self.availableDevices, selectedBeforeRefresh)
-						: self.availableDeviceSummaries.slice(0);
-					saveSetting(SELECTED_DEVICES_SETTING, JSON.stringify(self.selectedDevices));
-					self.hasStoredSelectedDevices = true;
-					self.requestControllerSync();
-					self.needsScan = false;
-					self.finishRefresh(client);
-					self.setStatus("Connected to OpenRGB at " + host + ":" + port + ". Found " + self.availableDevices.length + " device(s).");
-				});
+				readControllers();
 			},
 			onError: function (message) {
 				if (self.refreshId !== refreshId || self.client !== client) {
@@ -355,6 +383,10 @@ export function DiscoveryService() {
 					return;
 				}
 
+				if (self.startupRescanInProgress) {
+					self.setStatus("OpenRGB hardware rescan in progress. Waiting for controllers to settle...");
+					return;
+				}
 				self.needsScan = true;
 				self.setStatus("OpenRGB device list changed. Reloading...");
 			}
@@ -1143,7 +1175,10 @@ class OpenRGBClient {
 	}
 
 	requestRescanDevices() {
-		this.sendPacket(Command.requestRescanDevices, [], 0);
+		if (!this.isReady() || this.protocolVersion < 5) {
+			return false;
+		}
+		return this.sendPacket(Command.requestRescanDevices, [], 0);
 	}
 
 	setCustomMode(deviceIndex) {
@@ -1175,11 +1210,10 @@ function getRenderStateKey(controllerData) {
 }
 
 function ensureRenderClient(controllerData, logger) {
-	// Device plugins do not expose SignalRGB's discovery `service` object. The
-	// persistent bridge endpoint is intentionally fixed and local, while the
-	// daemon owns the configurable upstream OpenRGB connection.
+	// Device plugins do not expose SignalRGB's discovery `service` object, so the
+	// endpoint discovered with the controller is carried into each render context.
 	const host = normalizeHost(controllerData.openrgbHost || DEFAULT_HOST);
-	const port = DEFAULT_PORT;
+	const port = normalizePort(controllerData.openrgbPort || DEFAULT_PORT);
 	const key = host + ":" + port;
 
 	if (renderClient && renderClientKey === key) {
@@ -2088,15 +2122,7 @@ function readSetting(key, fallback) {
 }
 
 function readNumberSetting(key, fallback) {
-	const port = normalizePort(readSetting(key, fallback));
-	// SignalRGB runs discovery and device plugins in separate contexts. Existing
-	// device instances can therefore retain the old direct-SDK default even after
-	// DiscoveryService migrated it. Route that legacy default through the local
-	// persistent service in every context.
-	if (key === PORT_SETTING && port === 6742 && DEFAULT_PORT === 9730) {
-		return DEFAULT_PORT;
-	}
-	return port;
+	return normalizePort(readSetting(key, fallback));
 }
 
 function saveSetting(key, value) {

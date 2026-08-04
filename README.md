@@ -2,26 +2,30 @@
 
 ## MSI B450 Tomahawk compatibility
 
-The MSI B450 Tomahawk (MS-7C02) has been hardware-tested with OpenRGB 0.9
-(SDK protocol v4). Newer OpenRGB 1.0 release candidates may detect the board
-but fail to apply SDK color updates. For this board, use OpenRGB 0.9, start its
-SDK server on port 6742, and then start SignalRGB.
+The MSI B450 Tomahawk (MS-7C02) has been hardware-tested with the OpenRGB
+1.0rc2 WinRing0 build (SDK protocol v5). OpenRGB 1.0rc3's PawnIO build does not
+currently detect this board's Super I/O controller reliably. For this board,
+use the 1.0rc2 WinRing0 build and start its SDK server on port 6742.
 
-## Persistent bridge service
+SignalRGB restarts can leave this MSI controller accepting SDK packets without
+applying them to the hardware. Addon 2.2.0 uses OpenRGB SDK v5's official
+`Request Rescan Devices` command once during startup, waits for detection to
+settle, reloads the controller list, and then starts color streaming. This
+recovers the board without restarting OpenRGB.
 
-For OpenRGB versions whose SDK server becomes unresponsive after SignalRGB
-restarts, run `OpenRGBBridgeService.exe`. It listens locally on port 9730 and
-maintains one persistent connection to OpenRGB on port 6742. Configure this
-add-on to connect to `127.0.0.1:9730`.
+## Retired persistent proxy
+
+The former persistent proxy on port 9730 is no longer used. It multiplexed
+multiple logical clients into one OpenRGB SDK session and could leave older
+OpenRGB servers in an invalid state. Addon 2.2.0 automatically migrates the
+old port setting back to the direct OpenRGB endpoint at `127.0.0.1:6742`.
 
 Startup order:
 
 1. Start OpenRGB and its SDK server on port 6742.
-2. Start `OpenRGBBridgeService.exe`.
-3. Start SignalRGB with the bridge port set to 9730.
-
-The service negotiates the SDK protocol transparently and works with both
-OpenRGB SDK v4 and v5.
+2. Start SignalRGB.
+3. The addon requests one SDK v5 hardware rescan and begins streaming after
+   OpenRGB reports the refreshed controller list.
 
 SignalRGB To OpenRGB Bridge is a SignalRGB addon that exposes devices supported by [OpenRGB](https://openrgb.org/) as controllable SignalRGB devices.
 
@@ -39,6 +43,7 @@ Use it to fill support gaps in your setup: GPUs, keyboards, LED controllers, mot
 - Custom shapes from the OpenRGB Visual Map Plugin can be selected and controlled.
 - Large LED devices are sent over binary TCP packets instead of HTTP URLs.
 - OpenRGB SDK protocol versions up to v5 are supported.
+- SDK v5 startup recovery automatically reinitializes controllers after a SignalRGB restart.
 
 This addon does not add native SignalRGB support for every RGB device. It can only control devices that OpenRGB already detects and supports.
 
