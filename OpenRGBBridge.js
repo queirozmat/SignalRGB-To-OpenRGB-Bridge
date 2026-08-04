@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "Matheus OpenRGB Sync"; }
-export function Version() { return "3.0.0"; }
+export function Version() { return "3.0.1"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -63,7 +63,7 @@ const REQUEST_TIMEOUT_MS = 10000;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 5000;
 const AUTO_CONNECT_INTERVAL_MS = 4000;
-const MSI_RECOVERY_DELAY_MS = 30000;
+const MSI_RECOVERY_DELAY_MS = 20000;
 const MSI_RECOVERY_SETTLE_MS = 8000;
 
 const DeviceTypeIcon = {
@@ -1251,7 +1251,7 @@ function scheduleMsiStartupRecovery(client, controllerData, logger) {
 	renderRecoveryDeadline = Date.now() + MSI_RECOVERY_DELAY_MS;
 	renderRecoveryClient = client;
 	renderRecoveryLogger = logger;
-	logger("MSI B450 startup recovery scheduled in 30 seconds.");
+	logger("MSI B450 startup recovery scheduled in 20 seconds.");
 }
 
 function processMsiStartupRecovery(client) {

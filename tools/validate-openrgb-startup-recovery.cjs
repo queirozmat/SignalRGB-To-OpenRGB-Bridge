@@ -6,7 +6,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "OpenRGBBridge.js"), "
 
 assert.match(source, /const DEFAULT_PORT = 6742;/, "the addon must connect directly to the OpenRGB SDK");
 assert.match(source, /Number\(configuredPort\) === 9730/, "legacy proxy settings must migrate away from port 9730");
-assert.match(source, /const MSI_RECOVERY_DELAY_MS = 30000;/, "MSI recovery must wait for SignalRGB startup to settle");
+assert.match(source, /const MSI_RECOVERY_DELAY_MS = 20000;/, "MSI recovery must wait for SignalRGB startup to settle");
 assert.match(source, /const MSI_RECOVERY_SETTLE_MS = 8000;/, "MSI recovery must wait for OpenRGB rescan completion");
 assert.match(source, /MSI B450 TOMAHAWK/, "automatic recovery must be scoped to the affected motherboard");
 assert.match(source, /MS-7C02/, "automatic recovery must recognize the motherboard model identifier");
