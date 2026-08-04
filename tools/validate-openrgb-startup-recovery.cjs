@@ -11,6 +11,13 @@ assert.match(source, /const MSI_RECOVERY_SETTLE_MS = 8000;/, "MSI recovery must 
 assert.match(source, /MSI B450 TOMAHAWK/, "automatic recovery must be scoped to the affected motherboard");
 assert.match(source, /MS-7C02/, "automatic recovery must recognize the motherboard model identifier");
 assert.match(source, /renderRecoveryScheduled = true;/, "automatic recovery must run only once per plugin load");
+assert.match(source, /processMsiStartupRecovery\(client\)/, "recovery must run from SignalRGB's render loop");
+assert.match(source, /renderRecoveryDeadline = Date\.now\(\) \+ MSI_RECOVERY_DELAY_MS;/, "recovery must use a render-loop deadline");
+const recoveryScheduler = source.slice(
+	source.indexOf("function scheduleMsiStartupRecovery"),
+	source.indexOf("function processMsiStartupRecovery")
+);
+assert.doesNotMatch(recoveryScheduler, /setTimeout\(/, "MSI recovery scheduling must not depend on setTimeout");
 assert.match(source, /client\.requestRescanDevices\(\)/, "startup recovery must use OpenRGB's official rescan command");
 assert.match(source, /state\.lastFrameSignatures = \{\};/, "recovery must force the current color frame to be sent again");
 assert.match(source, /state\.customModeSet = false;/, "recovery must restore OpenRGB direct mode after rescan");

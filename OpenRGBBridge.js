@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
-export function Name() { return "OpenRGB Bridge"; }
-export function Version() { return "2.2.1"; }
+export function Name() { return "Matheus OpenRGB Sync"; }
+export function Version() { return "3.0.0"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -21,7 +21,7 @@ export function DeviceType() {
 		default: return "other";
 	}
 }
-export function Publisher() { return "Fefe_du_973"; }
+export function Publisher() { return "queirozmat"; }
 export function Size() { return [1, 1]; }
 export function DefaultPosition() { return [0, 70]; }
 export function DefaultScale() { return 1.0; }
@@ -42,7 +42,7 @@ const LAST_DEVICES_SETTING = "LastDevices";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 6742;
 const CLIENT_PROTOCOL_VERSION = 5;
-const CLIENT_NAME = "SignalRGB OpenRGB Bridge";
+const CLIENT_NAME = "Matheus OpenRGB Sync";
 const BRIDGE_CONTROLLER_ID = "openrgb-bridge";
 // Hidden carrier registered in `service.controllers` so QML can read the live status
 // via iteration (the only reliable JS→QML channel in SignalRGB; `discovery.getStatus()`
@@ -56,9 +56,9 @@ const BRIDGE_CONTROLLER_ID = "openrgb-bridge";
 // and the service's Update() tick re-publishes at most once per interval.
 const STATUS_CONTROLLER_ID = "openrgb-bridge-status";
 const STATUS_PUBLISH_INTERVAL_MS = 1000;
-const ICON_URL = "https://raw.githubusercontent.com/Fefedu973/SignalRGB-To-OpenRGB-Bridge/main/signalbridge.png";
-const DEVICE_ICON_BASE_URL = "https://raw.githubusercontent.com/Fefedu973/SignalRGB-To-OpenRGB-Bridge/main/icons/openrgb_white/";
-const BRIDGE_DEVICE_ICON_BASE_URL = "https://raw.githubusercontent.com/Fefedu973/SignalRGB-To-OpenRGB-Bridge/main/icons/openrgb_bridge/";
+const ICON_URL = "https://raw.githubusercontent.com/queirozmat/SignalRGB-To-OpenRGB-Bridge/main/signalbridge.png";
+const DEVICE_ICON_BASE_URL = "https://raw.githubusercontent.com/queirozmat/SignalRGB-To-OpenRGB-Bridge/main/icons/openrgb_white/";
+const BRIDGE_DEVICE_ICON_BASE_URL = "https://raw.githubusercontent.com/queirozmat/SignalRGB-To-OpenRGB-Bridge/main/icons/openrgb_bridge/";
 const REQUEST_TIMEOUT_MS = 10000;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 5000;
@@ -105,9 +105,11 @@ const Command = {
 let renderClient;
 let renderClientKey = "";
 let renderStates = {};
-let renderRecoveryTimeoutId;
-let renderRecoverySettleTimeoutId;
 let renderRecoveryScheduled = false;
+let renderRecoveryPhase = "idle";
+let renderRecoveryDeadline = 0;
+let renderRecoveryClient;
+let renderRecoveryLogger;
 
 export function Initialize() {
 	device.setName(controller.name || "OpenRGB Device");
@@ -129,6 +131,7 @@ export function Render() {
 	}
 
 	client.ensureConnected();
+	processMsiStartupRecovery(client);
 
 	const stateKey = getRenderStateKey(controller);
 	const state = renderStates[stateKey] || buildSignalRgbLayout(controller);
@@ -1244,57 +1247,60 @@ function scheduleMsiStartupRecovery(client, controllerData, logger) {
 	}
 
 	renderRecoveryScheduled = true;
+	renderRecoveryPhase = "waiting";
+	renderRecoveryDeadline = Date.now() + MSI_RECOVERY_DELAY_MS;
+	renderRecoveryClient = client;
+	renderRecoveryLogger = logger;
 	logger("MSI B450 startup recovery scheduled in 30 seconds.");
-	renderRecoveryTimeoutId = setTimeout(function () {
-		renderRecoveryTimeoutId = undefined;
-		if (renderClient !== client || !client.isReady()) {
-			logger("MSI B450 startup recovery skipped because the OpenRGB connection is not ready.");
-			return;
-		}
+}
 
+function processMsiStartupRecovery(client) {
+	if (!renderRecoveryScheduled || renderRecoveryClient !== client || !client.isReady()) {
+		return;
+	}
+
+	const now = Date.now();
+	if (renderRecoveryPhase === "waiting" && now >= renderRecoveryDeadline) {
 		if (!client.requestRescanDevices()) {
-			logger("MSI B450 startup recovery could not request an OpenRGB hardware rescan.");
+			renderRecoveryDeadline = now + 2000;
 			return;
 		}
+		renderRecoveryPhase = "settling";
+		renderRecoveryDeadline = now + MSI_RECOVERY_SETTLE_MS;
+		renderRecoveryLogger("MSI B450 startup recovery requested an OpenRGB hardware rescan; waiting 8 seconds.");
+		return;
+	}
 
-		logger("MSI B450 startup recovery requested an OpenRGB hardware rescan; waiting 8 seconds.");
-		renderRecoverySettleTimeoutId = setTimeout(function () {
-			renderRecoverySettleTimeoutId = undefined;
-			if (renderClient !== client || !client.isReady()) {
-				return;
+	if (renderRecoveryPhase !== "settling" || now < renderRecoveryDeadline) {
+		return;
+	}
+
+	for (const stateKey in renderStates) {
+		if (!Object.prototype.hasOwnProperty.call(renderStates, stateKey)) {
+			continue;
+		}
+
+		const state = renderStates[stateKey];
+		state.customModeSet = false;
+		state.lastFrameSignatures = {};
+		state.lastFrameSignature = "";
+		if (state.frames) {
+			for (let i = 0; i < state.frames.length; i++) {
+				state.frames[i].customModeSet = false;
 			}
+		}
+		setCustomModesForState(client, state);
+	}
 
-			for (const stateKey in renderStates) {
-				if (!Object.prototype.hasOwnProperty.call(renderStates, stateKey)) {
-					continue;
-				}
-
-				const state = renderStates[stateKey];
-				state.customModeSet = false;
-				state.lastFrameSignatures = {};
-				state.lastFrameSignature = "";
-				if (state.frames) {
-					for (let i = 0; i < state.frames.length; i++) {
-						state.frames[i].customModeSet = false;
-					}
-				}
-				setCustomModesForState(client, state);
-			}
-
-			logger("MSI B450 startup recovery complete; re-sending the current SignalRGB frame.");
-		}, MSI_RECOVERY_SETTLE_MS);
-	}, MSI_RECOVERY_DELAY_MS);
+	renderRecoveryPhase = "complete";
+	renderRecoveryLogger("MSI B450 startup recovery complete; re-sending the current SignalRGB frame.");
 }
 
 function clearRenderRecoveryTimers(resetScheduled) {
-	if (renderRecoveryTimeoutId !== undefined) {
-		clearTimeout(renderRecoveryTimeoutId);
-		renderRecoveryTimeoutId = undefined;
-	}
-	if (renderRecoverySettleTimeoutId !== undefined) {
-		clearTimeout(renderRecoverySettleTimeoutId);
-		renderRecoverySettleTimeoutId = undefined;
-	}
+	renderRecoveryPhase = "idle";
+	renderRecoveryDeadline = 0;
+	renderRecoveryClient = undefined;
+	renderRecoveryLogger = undefined;
 	if (resetScheduled) {
 		renderRecoveryScheduled = false;
 	}
