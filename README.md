@@ -8,10 +8,11 @@ currently detect this board's Super I/O controller reliably. For this board,
 use the 1.0rc2 WinRing0 build and start its SDK server on port 6742.
 
 SignalRGB restarts can leave this MSI controller accepting SDK packets without
-applying them to the hardware. Addon 2.2.0 uses OpenRGB SDK v5's official
-`Request Rescan Devices` command once during startup, waits for detection to
-settle, reloads the controller list, and then starts color streaming. This
-recovers the board without restarting OpenRGB.
+applying them to the hardware. Addon 3.0.2 recovers color streaming by
+reapplying Custom mode and the current frame after startup. It deliberately
+avoids an automatic OpenRGB hardware rescan because that operation can overlap
+SignalRGB's own device enumeration and cause a repeated host crash/restart loop.
+Use the addon's manual `Rescan OpenRGB` button only when hardware changes.
 
 ## Retired persistent proxy
 
@@ -24,8 +25,8 @@ Startup order:
 
 1. Start OpenRGB and its SDK server on port 6742.
 2. Start SignalRGB.
-3. The addon requests one SDK v5 hardware rescan and begins streaming after
-   OpenRGB reports the refreshed controller list.
+3. The addon reapplies the SDK-controlled mode and begins streaming without
+   triggering another hardware enumeration.
 
 SignalRGB To OpenRGB Bridge is a SignalRGB addon that exposes devices supported by [OpenRGB](https://openrgb.org/) as controllable SignalRGB devices.
 

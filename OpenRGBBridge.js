@@ -1,7 +1,7 @@
 import tcp from "@SignalRGB/tcp";
 
 export function Name() { return "Matheus OpenRGB Sync"; }
-export function Version() { return "3.0.1"; }
+export function Version() { return "3.0.2"; }
 export function Type() { return "network"; }
 export function DeviceType() {
 	if (typeof controller === "undefined") {
@@ -64,7 +64,6 @@ const DISCOVERY_REQUEST_TIMEOUT_MS = 10000;
 const CONNECT_TIMEOUT_MS = 5000;
 const AUTO_CONNECT_INTERVAL_MS = 4000;
 const MSI_RECOVERY_DELAY_MS = 20000;
-const MSI_RECOVERY_SETTLE_MS = 8000;
 
 const DeviceTypeIcon = {
 	0: "mainboard",
@@ -1260,21 +1259,15 @@ function processMsiStartupRecovery(client) {
 	}
 
 	const now = Date.now();
-	if (renderRecoveryPhase === "waiting" && now >= renderRecoveryDeadline) {
-		if (!client.requestRescanDevices()) {
-			renderRecoveryDeadline = now + 2000;
-			return;
-		}
-		renderRecoveryPhase = "settling";
-		renderRecoveryDeadline = now + MSI_RECOVERY_SETTLE_MS;
-		renderRecoveryLogger("MSI B450 startup recovery requested an OpenRGB hardware rescan; waiting 8 seconds.");
+	if (renderRecoveryPhase !== "waiting" || now < renderRecoveryDeadline) {
 		return;
 	}
 
-	if (renderRecoveryPhase !== "settling" || now < renderRecoveryDeadline) {
-		return;
-	}
-
+	// Do not request an automatic hardware rescan here. On some systems the SDK
+	// rescan overlaps SignalRGB's own startup device enumeration and repeatedly
+	// crashes the host, creating a costly restart loop. Reapplying Custom mode and
+	// invalidating the cached frame is enough to recover normal color streaming;
+	// explicit hardware discovery remains available through the Rescan button.
 	for (const stateKey in renderStates) {
 		if (!Object.prototype.hasOwnProperty.call(renderStates, stateKey)) {
 			continue;
@@ -1293,7 +1286,7 @@ function processMsiStartupRecovery(client) {
 	}
 
 	renderRecoveryPhase = "complete";
-	renderRecoveryLogger("MSI B450 startup recovery complete; re-sending the current SignalRGB frame.");
+	renderRecoveryLogger("MSI B450 startup recovery complete without a hardware rescan; re-sending the current SignalRGB frame.");
 }
 
 function clearRenderRecoveryTimers(resetScheduled) {
