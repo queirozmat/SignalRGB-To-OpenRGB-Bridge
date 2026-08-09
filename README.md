@@ -14,6 +14,12 @@ avoids an automatic OpenRGB hardware rescan because that operation can overlap
 SignalRGB's own device enumeration and cause a repeated host crash/restart loop.
 Use the addon's manual `Rescan OpenRGB` button only when hardware changes.
 
+For the MSI B450 Tomahawk workaround, the Windows startup helper in `windows/`
+performs one SDK v5 hardware rescan while SignalRGB is closed, waits for OpenRGB
+to settle, and only then starts SignalRGB. The rescan helper refuses to run while
+`SignalRgb.exe` exists, so hardware enumeration cannot interrupt a game or create
+a SignalRGB restart loop.
+
 ## Retired persistent proxy
 
 The former persistent proxy on port 9730 is no longer used. It multiplexed
